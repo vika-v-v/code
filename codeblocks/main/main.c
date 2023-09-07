@@ -62,7 +62,7 @@ void write_page_to_hd(uint16_t page_num) {
 uint16_t evict_page() {
     int32_t oldest_time = INT32_MAX;
     int16_t evict_page_num = -1;
-    
+
     // Find the least recently used page
     for (int i = 0; i < PAGE_TABLE_SIZE; i++) {
         if (page_table[i].access_time < oldest_time && page_table[i].present_bit) {
@@ -127,7 +127,8 @@ void set_data(uint32_t virt_address, uint8_t value) {
 }
 
 int main(void) {
-	printf("bla");
+    puts("bla");
+
     srand(time(NULL));
 
     // Initialize hd_mem with random values.
