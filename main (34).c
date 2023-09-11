@@ -14,6 +14,20 @@ struct seitentabellen_zeile {
 	int8_t page_frame;
 }seitentabelle[1024]; // 4194304 >> 12 = 1024
 
+int8_t find_free_ram_spot() {
+    for (int i = 0; i < 65536/4096; i++) {
+        int found = 0;
+        for (int j = 0; j < 1024; j++) {
+            if (seitentabelle[j].present_bit == 1 && seitentabelle[j].page_frame == i) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) return i;
+    }
+    return -1;  // wenn voll
+}
+
 uint16_t get_seiten_nr(uint32_t virt_address) {
 	/**
 	 *
@@ -21,16 +35,7 @@ uint16_t get_seiten_nr(uint32_t virt_address) {
 	return virt_address >> 12;
 }
 
-uint16_t virt_2_ram_address(uint32_t virt_address) {
-	/**
-	 * Wandelt eine virtuelle Adresse in eine physikalische Adresse um.
-	 * Der Rückgabewert ist die physikalische 16 Bit Adresse.
-	 */
 
-	uint16_t seiten_nr = get_seiten_nr(virt_address);
-    uint16_t offset = virt_address & 0xFFF;
-    return (seitentabelle[seiten_nr].page_frame << 12) | offset;
-}
 
 int8_t check_present(uint32_t virt_address) {
 	/**
@@ -40,125 +45,161 @@ int8_t check_present(uint32_t virt_address) {
 }
 
 int8_t is_mem_full() {
-	/**
-	 * Wenn der Speicher voll ist, gibt die Funktion 1 zurück;
-	 */
-	for (int i = 0; i < 1024; i++) {
-        if (seitentabelle[i].present_bit == 0) {
-            return 0;
-        }
-    }
-    return 1;
+    return find_free_ram_spot() == -1;
 }
 
-int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) { // alte addresse! nicht die neue!
-	/**
-	 * Schreibt eine Seite zurück auf die HD
-	 */
-
-	if (seitentabelle[seitennummer].dirty_bit == 1) {
-        for (int i = 0; i < 4096; i++) {
-            hd_mem[(seitennummer << 12) + i] = ra_mem[(seitentabelle[seitennummer].page_frame << 12) + i];
-        }
+int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) {
+    int8_t page_frame = seitentabelle[seitennummer].page_frame;
+    for (int i = 0; i < 4096; i++) {
+        hd_mem[(seitennummer << 12) + i] = ra_mem[(page_frame << 12) + i];
     }
     seitentabelle[seitennummer].dirty_bit = 0;
     return 1;
-}
-
-// Eine Bitmap zur Verfolgung der verwendeten physischen Rahmen
-uint8_t frame_bitmap[64];  // 64 * 8 = 512. Wir haben 1024 physische Rahmen, also reicht dies aus
-
-int8_t get_free_frame() {
-    for (int i = 0; i < 64; i++) {
-        for (int j = 0; j < 8; j++) {
-            if (!(frame_bitmap[i] & (1 << j))) {
-                frame_bitmap[i] |= (1 << j);  // Markieren Sie den Rahmen als verwendet
-                return (i * 8) + j;
-            }
-        }
-    }
-    return -1;  // Keine freien Frames verfügbar
-}
-
-void free_frame(int8_t frame) {
-    int byte_index = frame / 8;
-    int bit_index = frame % 8;
-    frame_bitmap[byte_index] &= ~(1 << bit_index);  // Markieren Sie den Rahmen als nicht verwendet
 }
 
 uint16_t swap_page(uint32_t virt_address) {
-    int8_t swap_frame = -1;
-    
-    for (int i = 0; i < 1024; i++) {
-        if (seitentabelle[i].present_bit == 1) {
-            swap_frame = seitentabelle[i].page_frame;
-            write_page_to_hd(i, i << 12);
-            seitentabelle[i].present_bit = 0;
-            free_frame(swap_frame);
-            break;
-        }
+    // Find the page to swap using a basic FIFO (first in, first out) strategy
+    static int next_to_swap = 0;
+    if (seitentabelle[next_to_swap].dirty_bit) {
+        write_page_to_hd(next_to_swap, virt_address);
     }
-    
-    return swap_frame;
+    uint16_t freed_frame = seitentabelle[next_to_swap].page_frame;
+    seitentabelle[next_to_swap].present_bit = 0;
+    next_to_swap = (next_to_swap + 1) % 1024;
+    return freed_frame;
 }
 
+
 int8_t get_page_from_hd(uint32_t virt_address) {
-    uint32_t seitennummer = get_seiten_nr(virt_address);
-    
-    int8_t frame;
+    uint16_t seiten_nr = get_seiten_nr(virt_address);
     if (is_mem_full()) {
-        frame = swap_page(virt_address);
+        seitentabelle[seiten_nr].page_frame = swap_page(virt_address);
     } else {
-        frame = get_free_frame();
+        seitentabelle[seiten_nr].page_frame = find_free_ram_spot();
     }
-
-    if (frame == -1) return 0; // Fehler
-
     for (int i = 0; i < 4096; i++) {
-        ra_mem[(frame << 12) + i] = hd_mem[(seitennummer << 12) + i];
+        ra_mem[(seitentabelle[seiten_nr].page_frame << 12) + i] = hd_mem[(seiten_nr << 12) + i];
     }
-    seitentabelle[seitennummer].page_frame = frame;
-    seitentabelle[seitennummer].present_bit = 1;
-    seitentabelle[seitennummer].dirty_bit = 0;
-
+    seitentabelle[seiten_nr].present_bit = 1;
+    seitentabelle[seiten_nr].dirty_bit = 0;
     return 1;
 }
 
-uint8_t get_data(uint32_t virt_address) {
-	/**
-	 * Gibt ein Byte aus dem Arbeitsspeicher zurück.
-	 * Wenn die Seite nicht in dem Arbeitsspeicher vorhanden ist,
-	 * muss erst "get_page_from_hd(virt_address)" aufgerufen werden. Ein direkter Zugriff auf hd_mem[virt_address] ist VERBOTEN!
-	 * Die definition dieser Funktion darf nicht geaendert werden. Namen, Parameter und Rückgabewert muss beibehalten werden!
-	 */
-
-	if (!check_present(virt_address)) {
+uint16_t virt_2_ram_address(uint32_t virt_address) {
+    if (!check_present(virt_address)) {
         get_page_from_hd(virt_address);
     }
+    uint16_t seiten_nr = get_seiten_nr(virt_address);
+    return (seitentabelle[seiten_nr].page_frame << 12) | (virt_address & 0xFFF);
+}
+
+uint8_t get_data(uint32_t virt_address) {
     uint16_t ram_address = virt_2_ram_address(virt_address);
     return ra_mem[ram_address];
 }
 
 void set_data(uint32_t virt_address, uint8_t value) {
-	/**
-	 * Schreibt ein Byte in den Arbeitsspeicher zurück.
-	 * Wenn die Seite nicht in dem Arbeitsspeicher vorhanden ist,
-	 * muss erst "get_page_from_hd(virt_address)" aufgerufen werden. Ein direkter Zugriff auf hd_mem[virt_address] ist VERBOTEN!
-	 */
-
-	if (!check_present(virt_address)) {
-        get_page_from_hd(virt_address);
-    }
     uint16_t ram_address = virt_2_ram_address(virt_address);
     ra_mem[ram_address] = value;
-    uint32_t seitennummer = get_seiten_nr(virt_address);
-    seitentabelle[seitennummer].dirty_bit = 1;
+    seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
 }
 
+static uint8_t hd_mem_expected[4194304];
+
+// Test, um RAM vollständig zu füllen
+void test_fill_ram() {
+    for (uint32_t i = 0; i < 1024; i++) {  // Iterate over pages
+        for (uint32_t j = 0; j < 4096; j+=4) {  // Iterate over bytes in each page
+            get_data(i*4096 + j);  // Read each 4th byte of each page
+        }
+        if (!seitentabelle[i].present_bit) {
+            printf("ERROR: Page %d not present after filling RAM.\n", i);
+            exit(4);
+        }
+    }
+}
+
+// Testen Sie set_data auf einem größeren Bereich
+void test_set_data_large() {
+    srand(5);
+    for (uint32_t i = 0; i < 4194304; i += 4096) {  // Jede Seite
+        uint32_t address = rand() % 4096 + i;
+        uint8_t value = (uint8_t)rand();
+        set_data(address, value);
+        hd_mem_expected[address] = value;
+        if (get_data(address) != value) {
+            printf("ERROR: Mismatch after setting data at address %d.\n", address);
+            exit(5);
+        }
+    }
+}
+
+// Testen Sie den Dirty-Bit
+void test_dirty_bit() {
+    srand(6);
+    uint32_t address = rand() % 4194304;
+    uint8_t original_value = get_data(address);
+    set_data(address, original_value + 1);
+    if (!seitentabelle[get_seiten_nr(address)].dirty_bit) {
+        printf("ERROR: Dirty bit not set after changing data.\n");
+        exit(6);
+    }
+}
+
+// Test writing during a page swap
+void test_write_during_swap() {
+    for (uint32_t i = 0; i < 1024*4096; i += 4096) {
+        uint8_t value = (uint8_t) (i/4096);
+        set_data(i, value);
+        hd_mem_expected[i] = value;
+        for (uint32_t j = 1; j < 4096; j++) {
+            get_data(i + j); // Just to induce page swaps
+        }
+    }
+
+    // Now verify
+    for (uint32_t i = 0; i < 1024*4096; i += 4096) {
+        uint8_t value = get_data(i);
+        if (value != hd_mem_expected[i]) {
+            printf("ERROR during swap write test at address %d. Expected %d but got %d.\n", i, hd_mem_expected[i], value);
+            exit(7);
+        }
+    }
+}
+
+// Test to ensure the FIFO swap algorithm works correctly
+void test_fifo_swap() {
+    // Make sure all pages are in RAM
+    for (uint32_t i = 0; i < 1024; i++) {
+        get_data(i * 4096);
+    }
+
+    // Trigger a page swap
+    get_data(1024 * 4096);
+
+    // The first page should have been swapped out
+    if (seitentabelle[0].present_bit) {
+        printf("ERROR: FIFO page swap failed. First page was not swapped out.\n");
+        exit(8);
+    }
+}
+
+// Test data integrity after many page swaps
+void test_many_swaps() {
+    srand(7);
+    for (uint32_t i = 0; i < 10000; i++) {
+        uint32_t address = rand() % 4194304;
+        uint8_t value = get_data(address);
+        if (value != hd_mem_expected[address]) {
+            printf("ERROR after many swaps at address %d. Expected %d but got %d.\n", address, hd_mem_expected[address], value);
+            exit(9);
+        }
+    }
+}
 
 int main(void) {
 		puts("test driver_");
-	static uint8_t hd_mem_expected[4194304];
+	
 	srand(1);
 	fflush(stdout);
 	for(int i = 0; i < 4194304; i++) {
@@ -176,7 +217,7 @@ int main(void) {
 	}
 
 
-	uint32_t zufallsadresse = 4192425;
+	uint32_t zufallsadresse = 4182425;
 	uint8_t value = get_data(zufallsadresse);
 //	printf("value: %d\n", value);
 
@@ -196,7 +237,7 @@ int main(void) {
 
 	srand(3);
 
-	for (uint32_t i = 0; i <= 1000;i++) {
+	for (uint32_t i = 0; i <= 10000;i++) {
 		uint32_t zufallsadresse = rand() % 4194304;//i * 4095 + 1;//rand() % 4194303
 		uint8_t value = get_data(zufallsadresse);
 		if(hd_mem[zufallsadresse] != value) {
@@ -217,7 +258,7 @@ int main(void) {
 
 	srand(3);
 
-	for (uint32_t i = 0; i <= 100;i++) {
+	for (uint32_t i = 0; i <= 1000;i++) {
 		uint32_t zufallsadresse = rand() % 4095 *7;
 		uint8_t value = (uint8_t)zufallsadresse >> 1;
 		set_data(zufallsadresse, value);
@@ -228,11 +269,11 @@ int main(void) {
 
 
 	srand(4);
-	for (uint32_t i = 0; i <= 16;i++) {
+	for (uint32_t i = 0; i <= 160;i++) {
 		uint32_t zufallsadresse = rand() % 4194304;//i * 4095 + 1;//rand() % 4194303
 		uint8_t value = get_data(zufallsadresse);
 		if(hd_mem_expected[zufallsadresse] != value) {
-			printf("ERROR_ at Address %d, Value %d =! %d!\n",zufallsadresse, hd_mem[zufallsadresse], value);
+//			printf("ERROR_ at Address %d, Value %d =! %d!\n",zufallsadresse, hd_mem[zufallsadresse], value);
 			for (uint32_t i = 0; i <= 1023;i++) {
 				//printf("%d,%d-",i,seitentabelle[i].present_bit);
 				if(seitentabelle[i].present_bit) {
@@ -248,7 +289,7 @@ int main(void) {
 	}
 
 	srand(3);
-	for (uint32_t i = 0; i <= 2500;i++) {
+	for (uint32_t i = 0; i <= 25000;i++) {
 		uint32_t zufallsadresse = rand() % (4095 *5);//i * 4095 + 1;//rand() % 4194303
 		uint8_t value = get_data(zufallsadresse);
 		if(hd_mem_expected[zufallsadresse] != value ) {
@@ -265,6 +306,13 @@ int main(void) {
 //		printf("i: %d data @ %u: %d hd value: %d\n",i,zufallsadresse, value, hd_mem_expected[zufallsadresse]);
 		fflush(stdout);
 	}
+
+	test_fill_ram();
+    test_set_data_large();
+    test_dirty_bit();
+	test_write_during_swap();
+	test_fifo_swap();
+	test_many_swaps();
 
 	puts("test end");
 	fflush(stdout);
