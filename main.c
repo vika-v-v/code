@@ -55,16 +55,14 @@ int8_t is_mem_full() {
 }
 
 int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) {
-    int physik_anfang = 4096 * seitennummer; //Anfang der Page im RAM
-    int physik_ende = 4096 * (seitennummer + 1);
-    int32_t counting_virt_address = get_seiten_nr(virt_address) << 12;
-
-    for (int physik_byte = physik_anfang; physik_byte < physik_ende; physik_byte++) {
-        hd_mem[counting_virt_address] = ra_mem[physik_byte];
-        counting_virt_address++;
+    uint16_t ram_start_address = seitennummer << 12;
+    uint32_t hd_page_start_address = virt_address << 12;
+    for(uint16_t i = 0; i < 4096;i++) {
+         hd_mem[(hd_page_start_address) + i] = ra_mem[ram_start_address + i];
     }
 
-    return 1;
+
+    return 0;
 }
 
 
