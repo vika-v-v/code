@@ -14,6 +14,17 @@ struct seitentabellen_zeile {
 	int8_t page_frame;
 }seitentabelle[1024]; // 4194304 >> 12 = 1024
 
+uint16_t get_seiten_nr(uint32_t virt_address);
+int8_t is_mem_full(void);
+int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address);
+uint16_t swap_page(uint32_t virt_address);
+int8_t get_page_from_hd(uint32_t virt_address);
+uint16_t virt_2_ram_address(uint32_t virt_address);
+int8_t check_present(uint32_t virt_address);
+uint8_t get_data(uint32_t virt_address);
+void set_data(uint32_t virt_address, uint8_t value);
+
+
 uint16_t get_seiten_nr(uint32_t virt_address) {
 	/**
 	 *
@@ -28,8 +39,11 @@ uint16_t virt_2_ram_address(uint32_t virt_address) {
 	 */
 
 	uint16_t seiten_nr = get_seiten_nr(virt_address);
-    uint16_t offset = virt_address & 0xFFF;
-    return (seitentabelle[seiten_nr].page_frame << 12) | offset;
+	if (!check_present(virt_address)) {
+		get_page_from_hd(virt_address);
+	}
+	return (seitentabelle[seiten_nr].page_frame << 12) | (virt_address & 0xFFF);
+
 }
 
 int8_t check_present(uint32_t virt_address) {
@@ -56,13 +70,16 @@ int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) { // alte 
 	 * Schreibt eine Seite zurück auf die HD
 	 */
 
-	if (seitentabelle[seitennummer].dirty_bit == 1) {
-        uint16_t ram_addr = seitentabelle[seitennummer].page_frame << 12;
-        for (int i = 0; i < 4096; i++) {
-            hd_mem[(seitennummer << 12) + i] = ra_mem[ram_addr + i];
-        }
-    }
-    return 1;
+	if (seitentabelle[seitennummer].dirty_bit) {
+		uint32_t hd_address = seitennummer << 12;
+		uint32_t ram_address = seitentabelle[seitennummer].page_frame << 12;
+		for (int i = 0; i < 4096; i++) {
+			hd_mem[hd_address + i] = ra_mem[ram_address + i];
+		}
+		seitentabelle[seitennummer].dirty_bit = 0;
+		return 1;
+	}
+	return 0;
 }
 
 uint16_t swap_page(uint32_t virt_address) {
@@ -72,23 +89,29 @@ uint16_t swap_page(uint32_t virt_address) {
 	 * muss die Seite zurück in den hd_mem geschrieben werden.
 	 * Welche Rückschreibstrategie Sie implementieren möchten, ist Ihnen überlassen.
 	 */
-	uint32_t seiten_nr = get_seiten_nr(virt_address);
-    uint16_t old_frame = 0;
-    
-    for (int i = 0; i < 1024; i++) {
-        if (seitentabelle[i].present_bit) {
-            old_frame = seitentabelle[i].page_frame;
-            write_page_to_hd(i, i << 12);
-            seitentabelle[i].present_bit = 0;
-            break;
-        }
-    }
+	uint16_t seiten_nr = get_seiten_nr(virt_address);
+	uint16_t old_seiten_nr;
+	int8_t swap_out_frame = -1;
 
-    seitentabelle[seiten_nr].page_frame = old_frame;
-    seitentabelle[seiten_nr].dirty_bit = 0;
-    seitentabelle[seiten_nr].present_bit = 1;
-    
-    return old_frame;
+	for (uint16_t i = 0; i < 1024; i++) {
+		if (seitentabelle[i].present_bit && !seitentabelle[i].dirty_bit) {
+			old_seiten_nr = i;
+			swap_out_frame = seitentabelle[i].page_frame;
+			write_page_to_hd(i, i << 12);
+			seitentabelle[i].present_bit = 0;
+			seitentabelle[i].page_frame = -1;
+			break;
+		}
+	}
+
+	if (swap_out_frame == -1) {
+		puts("No suitable page to swap out.");
+		exit(-1);
+	}
+
+	seitentabelle[seiten_nr].present_bit = 1;
+	seitentabelle[seiten_nr].page_frame = swap_out_frame;
+	return swap_out_frame;
 }
 
 int8_t get_page_from_hd(uint32_t virt_address) {
@@ -99,27 +122,34 @@ int8_t get_page_from_hd(uint32_t virt_address) {
 	 */
 
 	uint16_t seiten_nr = get_seiten_nr(virt_address);
-    uint16_t ram_address;
+	uint16_t frame;
+	if (is_mem_full()) {
+		frame = swap_page(virt_address);
+	} else {
+		int found = 0;
+		for (int i = 0; i < 1024; i++) {
+		    if (seitentabelle[i].present_bit == 0) {
+		        frame = i;
+		        found = 1;
+		        break;
+		    }
+		}
+		if (!found) {
+		    printf("Error: No free space in seitentabelle.\n");
+		    exit(-1);
+		}
 
-    if (is_mem_full()) {
-        ram_address = swap_page(virt_address);
-    } else {
-        for (int i = 0; i < 1024; i++) {
-            if (seitentabelle[i].present_bit == 0) {
-                ram_address = i;
-                seitentabelle[i].page_frame = i;
-                break;
-            }
-        }
-    }
+	}
 
-    for (int i = 0; i < 4096; i++) {
-        ra_mem[(ram_address << 12) + i] = hd_mem[(seiten_nr << 12) + i];
-    }
-    
-    seitentabelle[seiten_nr].present_bit = 1;
-    
-    return 1;
+	uint32_t hd_address = seiten_nr << 12;
+	uint32_t ram_address = frame << 12;
+	for (int i = 0; i < 4096; i++) {
+		ra_mem[ram_address + i] = hd_mem[hd_address + i];
+	}
+
+	seitentabelle[seiten_nr].present_bit = 1;
+	seitentabelle[seiten_nr].page_frame = frame;
+	return 1;
 
 }
 
@@ -131,10 +161,9 @@ uint8_t get_data(uint32_t virt_address) {
 	 * Die definition dieser Funktion darf nicht geaendert werden. Namen, Parameter und Rückgabewert muss beibehalten werden!
 	 */
 	if (!check_present(virt_address)) {
-        get_page_from_hd(virt_address);
-    }
-
-    return ra_mem[virt_2_ram_address(virt_address)];
+		get_page_from_hd(virt_address);
+	}
+	return ra_mem[virt_2_ram_address(virt_address)];
 }
 
 void set_data(uint32_t virt_address, uint8_t value) {
@@ -145,11 +174,10 @@ void set_data(uint32_t virt_address, uint8_t value) {
 	 */
 
 	if (!check_present(virt_address)) {
-        get_page_from_hd(virt_address);
-    }
-
-    ra_mem[virt_2_ram_address(virt_address)] = value;
-    seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
+		get_page_from_hd(virt_address);
+	}
+	ra_mem[virt_2_ram_address(virt_address)] = value;
+	seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
 }
 
 
