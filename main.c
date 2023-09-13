@@ -24,16 +24,14 @@ int8_t check_present(uint32_t virt_address);
 uint8_t get_data(uint32_t virt_address);
 void set_data(uint32_t virt_address, uint8_t value);
 
+int8_t ram_frames[1024] = {0}; // 0 bedeutet frei, 1 bedeutet belegt
+
 int8_t get_free_frame_in_ram(void) {
     for (int i = 0; i < 1024; i++) {
-        int isUsed = 0;
-        for (int j = 0; j < 1024; j++) {
-            if (seitentabelle[j].present_bit && seitentabelle[j].page_frame == i) {
-                isUsed = 1;
-                break;
-            }
+        if (ram_frames[i] == 0) {
+            ram_frames[i] = 1;
+            return i;
         }
-        if (!isUsed) return i;
     }
     return -1; // kein freier Frame gefunden
 }
@@ -104,14 +102,17 @@ uint16_t swap_page(uint32_t virt_address) {
 	 */
 	uint16_t old_seiten_nr = -1;
     int8_t swap_out_frame = -1;
-
+    
+    // Implementieren Sie Ihre Auswahlstrategie (z.B. zufällig oder FIFO)
     for (uint16_t i = 0; i < 1024; i++) {
-        old_seiten_nr = i;
-        swap_out_frame = seitentabelle[i].page_frame;
-        write_page_to_hd(i);
-        seitentabelle[i].present_bit = 0;
-        seitentabelle[i].page_frame = -1;
-        break;
+        if (seitentabelle[i].present_bit) {
+            old_seiten_nr = i;
+            swap_out_frame = seitentabelle[i].page_frame;
+            write_page_to_hd(i); // Nur wenn das dirty_bit gesetzt ist, wird tatsächlich geschrieben
+            seitentabelle[i].present_bit = 0;
+            seitentabelle[i].page_frame = -1;
+            break;
+        }
     }
 
     if (swap_out_frame == -1) {
