@@ -7,6 +7,12 @@
 uint8_t hd_mem[4194304];
 uint8_t ra_mem[65536];
 
+struct pageframetabelle_zeile {
+    uint8_t belegt_bit; //0 = nicht belegt; 1 = belegt
+    uint16_t index; //damit ich um den zu einer Seite gehÃ¶rigen Index zu finden nicht durch die ganze Seitentabelle gehen muss
+    uint32_t virt_adress;
+} RAM_pages[16];//hier halte ich fest ob Page-Frames im RAM frei/belegt sind
+
 
 struct seitentabellen_zeile {
 	uint8_t present_bit;
