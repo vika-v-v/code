@@ -12,16 +12,26 @@ struct seitentabellen_zeile {
     int8_t page_frame;
 } seitentabelle[1024];
 
+int32_t find_free_ram_spot() {
+    for (int i = 0; i < sizeof(ra_mem); i++) {
+        if (ra_mem[i] == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+
 int8_t find_empty_frame() {
     for (int i = 0; i < 16; i++) {
-        int8_t gefunden = 1;
+        int gefunden = 1;
         for (int j = 0; j < 1024; j++) {
             if (seitentabelle[j].present_bit && seitentabelle[j].page_frame == i) {
                 gefunden = 0;
                 break;
             }
         }
-        if (gefunden) return i;
+        if (gefunden == 1) return i;
     }
     return -1;
 }
@@ -46,20 +56,19 @@ int8_t is_mem_full() {
         if (seitentabelle[i].present_bit == 1) geladen++;
     }
 
-    if (geladen == 16) return 1;
+    if (geladen >= 16) return 1;
     else return 0;
 }
 
 int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) {
-    int anfang = seitennummer * 4096;
-    int32_t virt_addr = get_seiten_nr(virt_address) << 12;
-
-    for (int i = anfang; i < anfang + 4096; i++) {
-        hd_mem[virt_addr] = ra_mem[i];
-        virt_addr++;
+    uint16_t ram_start_address = seitennummer << 12;
+    uint32_t hd_page_start_address = virt_address << 12;
+    for(uint16_t i = 0; i < 4096;i++) {
+         hd_mem[(hd_page_start_address) + i] = ra_mem[ram_start_address + i];
     }
 
-    return 1;
+
+    return 0;
 }
 
 uint16_t swap_page(uint32_t virt_address) {
@@ -86,25 +95,19 @@ uint16_t swap_page(uint32_t virt_address) {
 }
 
 int8_t get_page_from_hd(uint32_t virt_address) {
-    int8_t page_frame;
-    int32_t virt_addr = get_seiten_nr(virt_address) << 12;
-    
-    int8_t founded_empty_frame = find_empty_frame();
-    if (founded_empty_frame != -1) {
-        page_frame = founded_empty_frame;
-
-        int anfang = 4096 * page_frame;
-        for (int i = anfang; i < anfang + 4096; i++) {
-            ra_mem[i] = hd_mem[virt_addr];
-            virt_addr++;
-        }
+    uint16_t seiten_nr = get_seiten_nr(virt_address);
+    if (is_mem_full()) {
+        seitentabelle[seiten_nr].page_frame = swap_page(virt_address);
+        seitentabelle[seiten_nr].page_frame = find_free_ram_spot();
     } else {
-        page_frame = swap_page(virt_address);
+        seitentabelle[seiten_nr].page_frame = find_free_ram_spot();
+        
     }
-
-    seitentabelle[get_seiten_nr(virt_address)].present_bit = 1;
-    seitentabelle[get_seiten_nr(virt_address)].page_frame = page_frame;
-
+    for (int i = 0; i < 4096; i++) {
+        ra_mem[(seitentabelle[seiten_nr].page_frame << 12) + i] = hd_mem[(seiten_nr << 12) + i];
+    }
+    seitentabelle[seiten_nr].present_bit = 1;
+    seitentabelle[seiten_nr].dirty_bit = 0;
     return 1;
 }
 
@@ -117,13 +120,16 @@ uint8_t get_data(uint32_t virt_address) {
 }
 
 void set_data(uint32_t virt_address, uint8_t value) {
-    if (!check_present(virt_address)) {
-        get_page_from_hd(virt_address);
-    }
-    uint16_t ram = virt_2_ram_address(virt_address);
-    ra_mem[ram] = value;
+    if(check_present(virt_address)) {
+        ra_mem[virt_2_ram_address(virt_address)] = (uint8_t)value;
+        seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
 
-    seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
+    }
+    else {
+        get_page_from_hd(virt_address);
+        ra_mem[virt_2_ram_address(virt_address)] = value;
+        seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
+    }
 }
 
 
