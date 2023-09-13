@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <time.h>
+#include <sys/random.h>
 
 
 uint8_t hd_mem[4194304];

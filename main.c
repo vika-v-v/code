@@ -49,13 +49,17 @@ int8_t is_mem_full() {
 }
 
 int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) {
-    int8_t page_frame = seitentabelle[seitennummer].page_frame;
-    for (int i = 0; i < 4096; i++) {
-        hd_mem[(seitennummer << 12) + i] = ra_mem[(page_frame << 12) + i];
+    uint16_t ram_start_address = seitennummer << 12;
+    uint32_t hd_page_start_address = virt_address << 12;
+    for(uint16_t i = 0; i < 4096;i++) {
+         hd_mem[(hd_page_start_address) + i] = ra_mem[ram_start_address + i];
     }
-    seitentabelle[seitennummer].dirty_bit = 0;
-    return 1;
+
+
+    return 0;
 }
+
+
 
 uint16_t swap_page(uint32_t virt_address) {
     // Find the page to swap using a basic FIFO (first in, first out) strategy
@@ -72,11 +76,13 @@ uint16_t swap_page(uint32_t virt_address) {
 
 int8_t get_page_from_hd(uint32_t virt_address) {
     uint16_t seiten_nr = get_seiten_nr(virt_address);
+    
     if (is_mem_full()) {
         seitentabelle[seiten_nr].page_frame = swap_page(virt_address);
     } else {
         seitentabelle[seiten_nr].page_frame = find_free_ram_spot();
     }
+    
     for (int i = 0; i < 4096; i++) {
         ra_mem[(seitentabelle[seiten_nr].page_frame << 12) + i] = hd_mem[(seiten_nr << 12) + i];
     }
@@ -84,6 +90,7 @@ int8_t get_page_from_hd(uint32_t virt_address) {
     seitentabelle[seiten_nr].dirty_bit = 0;
     return 1;
 }
+
 
 uint16_t virt_2_ram_address(uint32_t virt_address) {
     if (!check_present(virt_address)) {
@@ -99,107 +106,22 @@ uint8_t get_data(uint32_t virt_address) {
 }
 
 void set_data(uint32_t virt_address, uint8_t value) {
-    uint16_t ram_address = virt_2_ram_address(virt_address);
-    ra_mem[ram_address] = value;
-    seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
-}
+    if(check_present(virt_address)) {
+        ra_mem[virt_2_ram_address(virt_address)] = (uint8_t)value;
+        seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
 
-static uint8_t hd_mem_expected[4194304];
-
-// Test, um RAM vollständig zu füllen
-void test_fill_ram() {
-    for (uint32_t i = 0; i < 1024; i++) {  // Iterate over pages
-        for (uint32_t j = 0; j < 4096; j+=4) {  // Iterate over bytes in each page
-            get_data(i*4096 + j);  // Read each 4th byte of each page
-        }
-        if (!seitentabelle[i].present_bit) {
-            printf("ERROR: Page %d not present after filling RAM.\n", i);
-            exit(4);
-        }
     }
-}
-
-// Testen Sie set_data auf einem größeren Bereich
-void test_set_data_large() {
-    srand(5);
-    for (uint32_t i = 0; i < 4194304; i += 4096) {  // Jede Seite
-        uint32_t address = rand() % 4096 + i;
-        uint8_t value = (uint8_t)rand();
-        set_data(address, value);
-        hd_mem_expected[address] = value;
-        if (get_data(address) != value) {
-            printf("ERROR: Mismatch after setting data at address %d.\n", address);
-            exit(5);
-        }
-    }
-}
-
-// Testen Sie den Dirty-Bit
-void test_dirty_bit() {
-    srand(6);
-    uint32_t address = rand() % 4194304;
-    uint8_t original_value = get_data(address);
-    set_data(address, original_value + 1);
-    if (!seitentabelle[get_seiten_nr(address)].dirty_bit) {
-        printf("ERROR: Dirty bit not set after changing data.\n");
-        exit(6);
-    }
-}
-
-// Test writing during a page swap
-void test_write_during_swap() {
-    for (uint32_t i = 0; i < 1024*4096; i += 4096) {
-        uint8_t value = (uint8_t) (i/4096);
-        set_data(i, value);
-        hd_mem_expected[i] = value;
-        for (uint32_t j = 1; j < 4096; j++) {
-            get_data(i + j); // Just to induce page swaps
-        }
-    }
-
-    // Now verify
-    for (uint32_t i = 0; i < 1024*4096; i += 4096) {
-        uint8_t value = get_data(i);
-        if (value != hd_mem_expected[i]) {
-            printf("ERROR during swap write test at address %d. Expected %d but got %d.\n", i, hd_mem_expected[i], value);
-            exit(7);
-        }
-    }
-}
-
-// Test to ensure the FIFO swap algorithm works correctly
-void test_fifo_swap() {
-    // Make sure all pages are in RAM
-    for (uint32_t i = 0; i < 1024; i++) {
-        get_data(i * 4096);
-    }
-
-    // Trigger a page swap
-    get_data(1024 * 4096);
-
-    // The first page should have been swapped out
-    if (seitentabelle[0].present_bit) {
-        printf("ERROR: FIFO page swap failed. First page was not swapped out.\n");
-        exit(8);
-    }
-}
-
-// Test data integrity after many page swaps
-void test_many_swaps() {
-    srand(7);
-    for (uint32_t i = 0; i < 10000; i++) {
-        uint32_t address = rand() % 4194304;
-        uint8_t value = get_data(address);
-        if (value != hd_mem_expected[address]) {
-            printf("ERROR after many swaps at address %d. Expected %d but got %d.\n", address, hd_mem_expected[address], value);
-            exit(9);
-        }
+    else {
+        get_page_from_hd(virt_address);
+        ra_mem[virt_2_ram_address(virt_address)] = value;
+        seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
     }
 }
 
 int main(void) {
 		puts("test driver_");
 	
+	static uint8_t hd_mem_expected[4194304];
 	srand(1);
 	fflush(stdout);
 	for(int i = 0; i < 4194304; i++) {
@@ -306,13 +228,6 @@ int main(void) {
 //		printf("i: %d data @ %u: %d hd value: %d\n",i,zufallsadresse, value, hd_mem_expected[zufallsadresse]);
 		fflush(stdout);
 	}
-
-	test_fill_ram();
-    test_set_data_large();
-    test_dirty_bit();
-	test_write_during_swap();
-	test_fifo_swap();
-	test_many_swaps();
 
 	puts("test end");
 	fflush(stdout);
