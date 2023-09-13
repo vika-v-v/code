@@ -12,37 +12,35 @@ struct seitentabellen_zeile {
     int8_t page_frame;
 } seitentabelle[1024];
 
+const int VERSCHIEBEN_UM = 12;
+const int MENGE = 16;
+
 int32_t find_free_ram_spot() {
     for (int i = 0; i < sizeof(ra_mem); i++) {
-        if (ra_mem[i] == 0) {
-            return i;
-        }
+        if (ra_mem[i] == 0) return i;
     }
     return -1;
 }
 
-
 int8_t find_empty_frame() {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MENGE; i++) {
         int gefunden = 1;
         for (int j = 0; j < 1024; j++) {
-            if (seitentabelle[j].present_bit && seitentabelle[j].page_frame == i) {
-                gefunden = 0;
-                break;
-            }
+            if (seitentabelle[j].present_bit && seitentabelle[j].page_frame == i) break;
         }
+		gefunden = 0;
         if (gefunden == 1) return i;
     }
     return -1;
 }
 
 uint16_t get_seiten_nr(uint32_t virt_address) {
-    return virt_address >> 12;
+    return virt_address >> VERSCHIEBEN_UM;
 }
 
 uint16_t virt_2_ram_address(uint32_t virt_address) {
     uint8_t page_frame = seitentabelle[get_seiten_nr(virt_address)].page_frame;
-    return page_frame << 12 | virt_address & 4095;
+    return page_frame << VERSCHIEBEN_UM | virt_address & 4095;
 }
 
 int8_t check_present(uint32_t virt_address) {
@@ -50,41 +48,41 @@ int8_t check_present(uint32_t virt_address) {
 }
 
 int8_t is_mem_full() {
-    int geladen = 0;
+    int count = 0;
 
     for (int i = 0; i < 1024; i++) {
-        if (seitentabelle[i].present_bit == 1) geladen++;
+        if (seitentabelle[i].present_bit == 1) count++;
+		if (count >= MENGE) return 1; // full
     }
 
-    if (geladen >= 16) return 1;
-    else return 0;
+    return 0; // nicht full
 }
 
 int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) {
-    uint16_t ram_start_address = seitennummer << 12;
-    uint32_t hd_page_start_address = virt_address << 12;
-    for(uint16_t i = 0; i < 4096;i++) {
-         hd_mem[(hd_page_start_address) + i] = ra_mem[ram_start_address + i];
+    int anfang = seitennummer * 4096;
+    int32_t virt_addr = get_seiten_nr(virt_address) << VERSCHIEBEN_UM;
+
+    for (int i = anfang; i < anfang + 4096; i++) {
+        hd_mem[virt_addr] = ra_mem[i];
+        virt_addr++;
     }
 
-
-    return 0;
+    return 1;
 }
 
 uint16_t swap_page(uint32_t virt_address) {
-    int page_using = rand() % 16;
-
+    int page_using = rand() % MENGE;
     for (int i = 0; i < 1024; i++) {
         if (seitentabelle[i].present_bit && seitentabelle[i].page_frame == page_using) {
             if (seitentabelle[i].dirty_bit == 1) {
-                write_page_to_hd(page_using, i << 12);
+                write_page_to_hd(page_using, i << VERSCHIEBEN_UM);
             }
             seitentabelle[i].present_bit = 0;
             break;
         }
     }
 
-    int32_t virt_addr = get_seiten_nr(virt_address) << 12;
+    int32_t virt_addr = get_seiten_nr(virt_address) << VERSCHIEBEN_UM;
     int anfang = 4096 * page_using;
     for (int i = anfang; i < anfang + 4096; i++) {
         ra_mem[i] = hd_mem[virt_addr];
@@ -95,19 +93,25 @@ uint16_t swap_page(uint32_t virt_address) {
 }
 
 int8_t get_page_from_hd(uint32_t virt_address) {
-    uint16_t seiten_nr = get_seiten_nr(virt_address);
-    if (is_mem_full()) {
-        seitentabelle[seiten_nr].page_frame = swap_page(virt_address);
-        seitentabelle[seiten_nr].page_frame = find_free_ram_spot();
+    int8_t page_frame;
+    int32_t virt_addr = get_seiten_nr(virt_address) << VERSCHIEBEN_UM;
+    
+    int8_t founded_empty_frame = find_empty_frame();
+    if (founded_empty_frame != -1) {
+        page_frame = founded_empty_frame;
+
+        int anfang = 4096 * page_frame;
+        for (int i = anfang; i < anfang + 4096; i++) {
+            ra_mem[i] = hd_mem[virt_addr];
+            virt_addr++;
+        }
     } else {
-        seitentabelle[seiten_nr].page_frame = find_free_ram_spot();
-        
+        page_frame = swap_page(virt_address);
     }
-    for (int i = 0; i < 4096; i++) {
-        ra_mem[(seitentabelle[seiten_nr].page_frame << 12) + i] = hd_mem[(seiten_nr << 12) + i];
-    }
-    seitentabelle[seiten_nr].present_bit = 1;
-    seitentabelle[seiten_nr].dirty_bit = 0;
+
+    seitentabelle[get_seiten_nr(virt_address)].present_bit = 1;
+    seitentabelle[get_seiten_nr(virt_address)].page_frame = page_frame;
+
     return 1;
 }
 
@@ -120,16 +124,13 @@ uint8_t get_data(uint32_t virt_address) {
 }
 
 void set_data(uint32_t virt_address, uint8_t value) {
-    if(check_present(virt_address)) {
-        ra_mem[virt_2_ram_address(virt_address)] = (uint8_t)value;
-        seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
-
-    }
-    else {
+    if (!check_present(virt_address)) {
         get_page_from_hd(virt_address);
-        ra_mem[virt_2_ram_address(virt_address)] = value;
-        seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
     }
+    uint16_t ram = virt_2_ram_address(virt_address);
+    ra_mem[ram] = value;
+
+    seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
 }
 
 
@@ -201,7 +202,7 @@ int main(void) {
 
 
     srand(4);
-    for (uint32_t i = 0; i <= 16; i++) {
+    for (uint32_t i = 0; i <= MENGE; i++) {
         uint32_t zufallsadresse = rand() % 4194304;//i * 4095 + 1;//rand() % 4194303
         uint8_t value = get_data(zufallsadresse);
         if (hd_mem_expected[zufallsadresse] != value) {
