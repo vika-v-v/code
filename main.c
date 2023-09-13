@@ -7,12 +7,6 @@
 uint8_t hd_mem[4194304];
 uint8_t ra_mem[65536];
 
-struct pageframetabelle_zeile {
-    uint8_t belegt_bit; //0 = nicht belegt; 1 = belegt
-    uint16_t index; //damit ich um den zu einer Seite gehÃ¶rigen Index zu finden nicht durch die ganze Seitentabelle gehen muss
-    uint32_t virt_adress;
-} RAM_pages[16];//hier halte ich fest ob Page-Frames im RAM frei/belegt sind
-
 
 struct seitentabellen_zeile {
 	uint8_t present_bit;
@@ -68,42 +62,15 @@ int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) {
 
 
 uint16_t swap_page(uint32_t virt_address) {
-    /**
-     * Das ist die Funktion zur Auslagerung einer Seite.
-     * Wenn das "Dirty_Bit" der Seite in der Seitentabelle gesetzt ist,
-     * muss die Seite zurÃ¼ck in den hd_mem geschrieben werden.
-     * Welche RÃ¼ckschreibstrategie Sie implementieren mÃ¶chten, ist Ihnen Ã¼berlassen.
-     * STRATEGIE: RANDOM PICK hihi <33
-     */
-    int rand_page = rand() % 16;
-    int index = RAM_pages[rand_page].index;
-    int alte_adresse = RAM_pages[rand_page].virt_adress; //adresse des blockes der RAUS-geswappt wird
-
-    //falls der random block dirty ist, muss er erst zurÃ¼ck geschrieben werden, bevor er Ã¼berschrieben wird <3
-    if (seitentabelle[get_seiten_nr(alte_adresse)].dirty_bit == 1) {
-        if (!write_page_to_hd(rand_page, alte_adresse)) {
-            printf("ERROR: failed to write back to HD");
-        }
+    // Find the page to swap using a basic FIFO (first in, first out) strategy
+    static int next_to_swap = 0;
+    if (seitentabelle[next_to_swap].dirty_bit) {
+        write_page_to_hd(next_to_swap, virt_address);
     }
-
-    //schreiben von neuen AUF alten block
-    int32_t counter_virt_address = get_seiten_nr(virt_address) << 12;
-    int physik_anfang = 4096 * rand_page;
-    int physik_ende = 4096 * (rand_page + 1);
-    for (int physik_byte = physik_anfang; physik_byte < physik_ende; physik_byte++) {
-        ra_mem[physik_byte] = hd_mem[counter_virt_address];
-        counter_virt_address++;
-    }
-
-    seitentabelle[get_seiten_nr(alte_adresse)].present_bit = 0; //weil die Seite Ãœberschrieben wurde
-
-    //aktualisieren der RAM_Pages Struktur
-    RAM_pages[rand_page].virt_adress = virt_address;
-    RAM_pages[rand_page].index = get_seiten_nr(virt_address);
-    RAM_pages[rand_page].belegt_bit = 1; //ist eigentlich Ã¼berflÃ¼ssig
-
-
-    return rand_page;
+    uint16_t freed_frame = seitentabelle[next_to_swap].page_frame;
+    seitentabelle[next_to_swap].present_bit = 0;
+    next_to_swap = (next_to_swap + 1) % 1024;
+    return freed_frame;
 }
 
 
@@ -139,7 +106,7 @@ uint8_t get_data(uint32_t virt_address) {
 }
 
 void set_data(uint32_t virt_address, uint8_t value) {
-    if(check_present(virt_address)) {
+     if(check_present(virt_address)) {
         ra_mem[virt_2_ram_address(virt_address)] = (uint8_t)value;
         seitentabelle[get_seiten_nr(virt_address)].dirty_bit = 1;
 
