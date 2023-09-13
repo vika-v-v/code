@@ -76,13 +76,13 @@ uint16_t swap_page(uint32_t virt_address) {
 
 int8_t get_page_from_hd(uint32_t virt_address) {
     uint16_t seiten_nr = get_seiten_nr(virt_address);
-    
     if (is_mem_full()) {
         seitentabelle[seiten_nr].page_frame = swap_page(virt_address);
+        seitentabelle[seiten_nr].page_frame = find_free_ram_spot();
     } else {
         seitentabelle[seiten_nr].page_frame = find_free_ram_spot();
+        
     }
-    
     for (int i = 0; i < 4096; i++) {
         ra_mem[(seitentabelle[seiten_nr].page_frame << 12) + i] = hd_mem[(seiten_nr << 12) + i];
     }
