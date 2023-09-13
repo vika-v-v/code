@@ -16,7 +16,7 @@ struct seitentabellen_zeile {
 
 uint16_t get_seiten_nr(uint32_t virt_address);
 int8_t is_mem_full(void);
-int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address);
+int8_t write_page_to_hd(uint32_t seitennummer);
 uint16_t swap_page(uint32_t virt_address);
 int8_t get_page_from_hd(uint32_t virt_address);
 uint16_t virt_2_ram_address(uint32_t virt_address);
@@ -24,6 +24,19 @@ int8_t check_present(uint32_t virt_address);
 uint8_t get_data(uint32_t virt_address);
 void set_data(uint32_t virt_address, uint8_t value);
 
+int8_t get_free_frame_in_ram(void) {
+    for (int i = 0; i < 1024; i++) {
+        int isUsed = 0;
+        for (int j = 0; j < 1024; j++) {
+            if (seitentabelle[j].present_bit && seitentabelle[j].page_frame == i) {
+                isUsed = 1;
+                break;
+            }
+        }
+        if (!isUsed) return i;
+    }
+    return -1; // kein freier Frame gefunden
+}
 
 uint16_t get_seiten_nr(uint32_t virt_address) {
 	/**
@@ -65,21 +78,21 @@ int8_t is_mem_full() {
     return 1;
 }
 
-int8_t write_page_to_hd(uint32_t seitennummer, uint32_t virt_address) { // alte addresse! nicht die neue!
+int8_t write_page_to_hd(uint32_t seitennummer) { // alte addresse! nicht die neue!
 	/**
 	 * Schreibt eine Seite zurück auf die HD
 	 */
 
 	if (seitentabelle[seitennummer].dirty_bit) {
-		uint32_t hd_address = seitennummer << 12;
-		uint32_t ram_address = seitentabelle[seitennummer].page_frame << 12;
-		for (int i = 0; i < 4096; i++) {
-			hd_mem[hd_address + i] = ra_mem[ram_address + i];
-		}
-		seitentabelle[seitennummer].dirty_bit = 0;
-		return 1;
-	}
-	return 0;
+        uint32_t hd_address = seitennummer << 12;
+        uint32_t ram_address = seitentabelle[seitennummer].page_frame << 12;
+        for (int i = 0; i < 4096; i++) {
+            hd_mem[hd_address + i] = ra_mem[ram_address + i];
+        }
+        seitentabelle[seitennummer].dirty_bit = 0;
+        return 1;
+    }
+    return 0;
 }
 
 uint16_t swap_page(uint32_t virt_address) {
@@ -89,29 +102,24 @@ uint16_t swap_page(uint32_t virt_address) {
 	 * muss die Seite zurück in den hd_mem geschrieben werden.
 	 * Welche Rückschreibstrategie Sie implementieren möchten, ist Ihnen überlassen.
 	 */
-	uint16_t seiten_nr = get_seiten_nr(virt_address);
-	uint16_t old_seiten_nr;
-	int8_t swap_out_frame = -1;
+	uint16_t old_seiten_nr = -1;
+    int8_t swap_out_frame = -1;
 
-	for (uint16_t i = 0; i < 1024; i++) {
-		if (seitentabelle[i].present_bit && !seitentabelle[i].dirty_bit) {
-			old_seiten_nr = i;
-			swap_out_frame = seitentabelle[i].page_frame;
-			write_page_to_hd(i, i << 12);
-			seitentabelle[i].present_bit = 0;
-			seitentabelle[i].page_frame = -1;
-			break;
-		}
-	}
+    for (uint16_t i = 0; i < 1024; i++) {
+        old_seiten_nr = i;
+        swap_out_frame = seitentabelle[i].page_frame;
+        write_page_to_hd(i);
+        seitentabelle[i].present_bit = 0;
+        seitentabelle[i].page_frame = -1;
+        break;
+    }
 
-	if (swap_out_frame == -1) {
-		puts("No suitable page to swap out.");
-		exit(-1);
-	}
+    if (swap_out_frame == -1) {
+        puts("No suitable page to swap out.");
+        exit(-1);
+    }
 
-	seitentabelle[seiten_nr].present_bit = 1;
-	seitentabelle[seiten_nr].page_frame = swap_out_frame;
-	return swap_out_frame;
+    return swap_out_frame;
 }
 
 int8_t get_page_from_hd(uint32_t virt_address) {
@@ -122,34 +130,26 @@ int8_t get_page_from_hd(uint32_t virt_address) {
 	 */
 
 	uint16_t seiten_nr = get_seiten_nr(virt_address);
-	uint16_t frame;
-	if (is_mem_full()) {
-		frame = swap_page(virt_address);
-	} else {
-		int found = 0;
-		for (int i = 0; i < 1024; i++) {
-		    if (seitentabelle[i].present_bit == 0) {
-		        frame = i;
-		        found = 1;
-		        break;
-		    }
-		}
-		if (!found) {
-		    printf("Error: No free space in seitentabelle.\n");
-		    exit(-1);
-		}
+    uint16_t frame;
+    if (is_mem_full()) {
+        frame = swap_page(virt_address);
+    } else {
+        frame = get_free_frame_in_ram();
+        if (frame == -1) {
+            printf("Error: No free space in RAM.\n");
+            exit(-1);
+        }
+    }
 
-	}
+    uint32_t hd_address = seiten_nr << 12;
+    uint32_t ram_address = frame << 12;
+    for (int i = 0; i < 4096; i++) {
+        ra_mem[ram_address + i] = hd_mem[hd_address + i];
+    }
 
-	uint32_t hd_address = seiten_nr << 12;
-	uint32_t ram_address = frame << 12;
-	for (int i = 0; i < 4096; i++) {
-		ra_mem[ram_address + i] = hd_mem[hd_address + i];
-	}
-
-	seitentabelle[seiten_nr].present_bit = 1;
-	seitentabelle[seiten_nr].page_frame = frame;
-	return 1;
+    seitentabelle[seiten_nr].present_bit = 1;
+    seitentabelle[seiten_nr].page_frame = frame;
+    return 1;
 
 }
 
